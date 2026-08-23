@@ -2333,6 +2333,62 @@ describe('outputSchema validation', () => {
             /Structured content does not match the tool's output schema/
         );
     });
+
+    /***
+     * Test: A catalog refresh that fails to compile must not drop the previous metadata
+     */
+    test('should keep the previous tool metadata when a catalog refresh fails to compile', async () => {
+        const validTool = {
+            name: 'validated',
+            description: 'A tool with a compilable output schema',
+            inputSchema: { type: 'object', properties: {} },
+            outputSchema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: false
+            }
+        };
+        const brokenTool = {
+            name: 'broken',
+            description: 'A tool whose output schema does not compile',
+            inputSchema: { type: 'object', properties: {} },
+            outputSchema: { type: 'object', properties: { bad: { type: 'not-a-json-schema-type' } } }
+        };
+
+        let serveBrokenCatalog = false;
+
+        const server = new Server({ name: 'test-server', version: '1.0.0' }, { capabilities: { tools: {} } });
+
+        server.setRequestHandler(InitializeRequestSchema, async request => ({
+            protocolVersion: request.params.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'test-server', version: '1.0.0' }
+        }));
+
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({
+            // The broken tool comes first: the caches are cleared, then compilation
+            // throws before the valid tool is re-added.
+            tools: serveBrokenCatalog ? [brokenTool, validTool] : [validTool]
+        }));
+
+        server.setRequestHandler(CallToolRequestSchema, async () => ({
+            structuredContent: { ok: 'not a boolean' }
+        }));
+
+        const client = new Client({ name: 'test-client', version: '1.0.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        await client.listTools();
+
+        serveBrokenCatalog = true;
+        await expect(client.listTools()).rejects.toThrow();
+
+        // The failed refresh must not have dropped the validator from the previous
+        // generation, which would let an invalid payload through unchecked.
+        await expect(client.callTool({ name: 'validated' })).rejects.toThrow(/Structured content does not match the tool's output schema/);
+    });
 });
 
 describe('Task-based execution', () => {
