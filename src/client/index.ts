@@ -724,10 +724,13 @@ export class Client<
             );
         }
 
+        // Capture the validator before yielding: a listTools() that lands while
+        // this request is in flight replaces the cache, and the response has to be
+        // checked against the schema that was current when the call started.
+        const validator = this.getToolOutputValidator(params.name);
+
         const result = await this.request({ method: 'tools/call', params }, resultSchema, options);
 
-        // Check if the tool has an outputSchema
-        const validator = this.getToolOutputValidator(params.name);
         if (validator) {
             // If tool has outputSchema, it MUST return structuredContent (unless it's an error)
             if (!result.structuredContent && !result.isError) {

@@ -2333,6 +2333,66 @@ describe('outputSchema validation', () => {
             /Structured content does not match the tool's output schema/
         );
     });
+
+    /***
+     * Test: A listTools() landing mid-call must not re-validate the in-flight call
+     */
+    test('should validate a call against the schema that was current when it started', async () => {
+        const schemaFor = (generation: string) => ({
+            type: 'object',
+            properties: { generation: { const: generation } },
+            required: ['generation'],
+            additionalProperties: false
+        });
+
+        let generation = 'old';
+        let releaseCall!: () => void;
+        const callReached = new Promise<void>(resolve => {
+            releaseCall = resolve;
+        });
+
+        const server = new Server({ name: 'test-server', version: '1.0.0' }, { capabilities: { tools: {} } });
+
+        server.setRequestHandler(InitializeRequestSchema, async request => ({
+            protocolVersion: request.params.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'test-server', version: '1.0.0' }
+        }));
+
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({
+            tools: [
+                {
+                    name: 'versioned',
+                    description: 'A tool whose output schema changes between listings',
+                    inputSchema: { type: 'object', properties: {} },
+                    outputSchema: schemaFor(generation)
+                }
+            ]
+        }));
+
+        server.setRequestHandler(CallToolRequestSchema, async () => {
+            await callReached;
+            return { structuredContent: { generation: 'old' } };
+        });
+
+        const client = new Client({ name: 'test-client', version: '1.0.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        await client.listTools();
+
+        const pending = client.callTool({ name: 'versioned' });
+
+        // The catalog is refreshed while the call is in flight.
+        generation = 'new';
+        await client.listTools();
+
+        releaseCall();
+
+        await expect(pending).resolves.toMatchObject({
+            structuredContent: { generation: 'old' }
+        });
+    });
 });
 
 describe('Task-based execution', () => {
